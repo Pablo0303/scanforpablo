@@ -1,0 +1,83 @@
+import subprocess
+import dns.resolver
+import paramiko
+import socket
+import ssl
+import argparse
+
+def scan_ip_range(ip_range, output_file):
+    print(f"Escaneando el rango de IPs: {ip_range}")
+    result = subprocess.run(['nmap', '-sL', ip_range], stdout=subprocess.PIPE, text=True)
+    ip_list = [line.split()[4] for line in result.stdout.split('\n') if 'Nmap scan report for' in line]
+
+    with open(output_file, 'w') as f:
+        for ip in ip_list:
+            domain = resolve_ip_to_domain(ip)
+            if domain:
+                f.write(f"{ip},{domain}\n")
+
+def resolve_ip_to_domain(ip):
+    try:
+        result = dns.resolver.resolve(ip, 'PTR')
+        for val in result:
+            return val.to_text()
+    except dns.resolver.NoAnswer:
+        return None
+
+def scan_ports(ip_range, target, proxy=None, mode=None):
+    print(f"Escanenado puertos en el rango de IPs: {ip_range}")
+    if mode == "proxy":
+        if proxy:
+            subprocess.run(['nmap', '-Pn', '-p-', '-sV', '--proxy', proxy, target])
+        else:
+            print("Se requiere un proxy para el modo de escaneo proxy.")
+    elif mode == "cdn-ssl":
+        subprocess.run(['nmap', '-Pn', '--script', 'ssl-cert,ssl-enum-ciphers', target])
+    else:
+        subprocess.run(['nmap', '-Pn', '-sSU', '-p', '1-65535', target])
+
+def check_ssh(ip, port=22):
+    try:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(ip, port=port, username='test', password='test', timeout=5)
+        client.close()
+        return True
+    except:
+        return False
+
+def check_ssl(ip, port=443):
+    context = ssl.create_default_context()
+    try:
+        with socket.create_connection((ip, port), timeout=5) as sock:
+            with context.wrap_socket(sock, server_hostname=ip) as ssock:
+                return True
+    except:
+        return False
+
+def main(args):
+    if args.scan_range:
+        scan_ip_range(args.scan_range, args.output_file)
+    elif args.scan_file:
+        with open(args.scan_file, 'r') as f:
+            for line in f:
+                ip, domain = line.strip().split(',')
+                print(f"IP {ip} resuelve a {domain}")
+                scan_ports(ip, domain, args.proxy, args.mode)
+    else:
+        print("Debe proporcionar un rango de IPs o un archivo de texto con IPs resueltas.")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Herramienta de escaneo de red.')
+    parser.add_argument('--scan-range', help='Escanear un rango de IPs (ejemplo: 104.16.20.0/24)')
+    parser.add_argument('--output-file', help='Archivo de salida para guardar las IPs resueltas')
+    parser.add_argument('--scan-file', help='Escanear IPs resueltas desde un archivo de texto')
+    parser.add_argument('--proxy', help='Proxy para el modo de escaneo proxy')
+    parser.add_argument('--mode', choices=['proxy', 'cdn-ssl'], help='Modo de escaneo (proxy, cdn-ssl)')
+    parser.add_argument('--no-proxy', action='store_true', help='No utilizar un proxy para el escaneo proxy')
+    args = parser.parse_args()
+
+    if args.no_proxy and args.mode == 'proxy':
+        print("No se puede utilizar el modo de escaneo proxy sin un proxy. Desactive la opción --no-proxy.")
+    else:
+        main(args)
